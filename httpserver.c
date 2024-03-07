@@ -20,7 +20,7 @@
 #include <ctype.h>
 #include <regex.h>
 #include <pthread.h>
-
+#include <semaphore.h>
 #include "queue.h"
 
 typedef struct{
@@ -35,6 +35,9 @@ static reqThread **thread_pool;
 static FILE *logfile;
 queue_t *q;
 pthread_mutex_t mutex;
+pthread_mutex_t wrt;
+sem_t workers;
+int readCount;
 
 void fatal_error(const char *msg) {
     fprintf(stderr, "%s\n", msg);
@@ -60,7 +63,7 @@ void getOutput(int connn, char *b, size_t len) {
 
 void processPUT(Request *req, char *bufm, int conny, int signal) {
 
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&wrt);
 
     char response[150] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
@@ -74,7 +77,7 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
         }
 
         getOutput(conny, response, strlen(response));
-        pthread_mutex_unlock(&mutex); //or else rest will be blocked
+        pthread_mutex_unlock(&wrt); //or else rest will be blocked
         return;
     }
 
@@ -131,12 +134,17 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
         }
     }
 
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&wrt);
 
     close(fd);
 }
 
 void processGet(Request *req, int conny, int signal) {
+    pthread_mutex_lock(&mutex);
+    readCount++;
+    if(readCount == 1){
+        pthread_mutex_lock(&wrt);
+    }
     char response[100] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
         sprintf(response, "HTTP/1.1 505 Version Not Supported\r\nContent-Length: 22\r\n\r\nVersion "
@@ -148,6 +156,11 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,505,%d\n", req->uri, req->id);
         }
         getOutput(conny, response, strlen(response));
+
+        readCount--; //first since non-atomic
+        if(readCount == 0)
+            pthread_mutex_unlock(&wrt);
+        pthread_mutex_unlock(&mutex);
         return;
     }
 
@@ -160,6 +173,10 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,403,%d\n", req->uri, req->id);
         }
         getOutput(conny, response, strlen(response));
+        readCount--; //first since non-atomic
+        if(readCount == 0)
+            pthread_mutex_unlock(&wrt);
+        pthread_mutex_unlock(&mutex);
         return;
     }
 
@@ -172,6 +189,11 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,404,%d\n", req->uri, req->id);
         getOutput(conny, response, strlen(response));
         close(fd);
+
+        readCount--; //first since non-atomic
+        if(readCount == 0)
+            pthread_mutex_unlock(&wrt);
+        pthread_mutex_unlock(&mutex);
         return;
     }
 
@@ -218,6 +240,10 @@ void processGet(Request *req, int conny, int signal) {
     //getOutput(conny, response, strlen(response));
     //getOutput(conny, buf + 0, num_read);
 
+    readCount--; //first since non-atomic
+    if(readCount == 0)
+        pthread_mutex_unlock(&wrt);
+    pthread_mutex_unlock(&mutex);
     close(fd);
     return;
 }
@@ -365,6 +391,8 @@ void *worker_thread(void *arg){
         (void) arg;
         uintptr_t connfd3;
         int conny;
+        //sem_wait(&workers); and post whenever a worker is done
+        //I believe the for loop wont be needed 
         for(;;){
             queue_pop(q, (void**)&connfd3); //then pop it to display it to make sure working 
             conny = (int)connfd3;
@@ -420,6 +448,9 @@ int main(int argc, char *argv[]) {
     q = queue_new(threads); //to hold enough connfds
 
     pthread_mutex_init(&mutex, NULL);
+    pthread_mutex_init(&wrt, NULL);
+    sem_init(&workers, 0, 0);
+
 
     thread_pool = (reqThread **)malloc(sizeof(reqThread *)*threads); //depends on thread count 
 /*
@@ -457,6 +488,7 @@ int main(int argc, char *argv[]) {
         queue_push(q, (void *)(intptr_t)con); //should push this connfd 
         //queue_pop(q, (void**)&num); //then pop it to display it to make sure working 
         //printf("\n\n%s%lu\n\n", "is it:", num);
+        //sem_post(&workers);
     }
     return EXIT_SUCCESS;
     

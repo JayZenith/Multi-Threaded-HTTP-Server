@@ -31,9 +31,10 @@ typedef struct{
 #define BUF_SIZE 1000000
 static reqThread **thread_pool;
 #define DEFAULT_THREAD_COUNT 4;
-#define OPTIONS "t:l:"
+#define OPTIONS "t:"
 static FILE *logfile;
 queue_t *q;
+pthread_mutex_t mutex;
 
 void fatal_error(const char *msg) {
     fprintf(stderr, "%s\n", msg);
@@ -47,6 +48,8 @@ typedef struct Request {
     char vers[20];
     char hdr[100];
     unsigned int val;
+    unsigned int id;
+    bool found;
 } Request;
 
 void getOutput(int connn, char *b, size_t len) {
@@ -59,8 +62,10 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
 
     char response[150] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
-        sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: %d\r\n\r\nBad Request\n",
-            req->val);
+        //sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: %d\r\n\r\nBad Request\n",
+            //req->val);
+        sprintf(response, "PUT,/%s,400,%d\n", req->uri, req->id);
+
         getOutput(conny, response, strlen(response));
         return;
     }
@@ -71,10 +76,12 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
         if (fd == -1) {
             printf("creating error");
         }
-        sprintf(response, "HTTP/1.1 201 Created\r\nContent-Length: 8\r\n\r\nCreated\n");
+        //sprintf(response, "HTTP/1.1 201 Created\r\nContent-Length: 8\r\n\r\nCreated\n");
+        sprintf(response, "PUT,/%s,201,%d\n", req->uri, req->id);
         getOutput(conny, response, strlen(response));
     } else { //YOURE NOT WRITING
-        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nOK\n");
+        //sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nOK\n");
+        sprintf(response, "PUT,/%s,200,%d\n", req->uri, req->id);
         getOutput(conny, response, strlen(response));
     }
     //just need to figure out flags and make this PUT shit work
@@ -112,21 +119,34 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
 void processGet(Request *req, int conny, int signal) {
     char response[100] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
+        /*
         sprintf(response, "HTTP/1.1 505 Version Not Supported\r\nContent-Length: 22\r\n\r\nVersion "
                           "Not Supported\n");
+        */
+        if(req->found == false){
+            sprintf(response, "GET,%s,505,%d\n", req->uri, 0);
+        }
+        else{
+            sprintf(response, "GET,%s,505,%d\n", req->uri, req->id);
+        }
         getOutput(conny, response, strlen(response));
         return;
     }
 
     if (access(req->uri, X_OK) == 0) {
-        sprintf(response, "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\n\r\nForbidden\n");
+        //sprintf(response, "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\n\r\nForbidden\n");
+        sprintf(response, "GET,%s,403, %d", req->uri, req->id);
         getOutput(conny, response, strlen(response));
         return;
     }
 
     int fd = open(req->uri, O_RDONLY, 0666);
     if (fd == -1) {
-        sprintf(response, "HTTP/1.1 404 Not Found\r\nContent-Length: 10\r\n\r\nNot Found\n");
+        //sprintf(response, "HTTP/1.1 404 Not Found\r\nContent-Length: 10\r\n\r\nNot Found\n");
+        if(req->found == false)
+            sprintf(response, "GET,%s,404,%d\n", req->uri, 0);
+        else
+            sprintf(response, "GET,%s,404,%d\n", req->uri, req->id);
         getOutput(conny, response, strlen(response));
         close(fd);
         return;
@@ -138,11 +158,19 @@ void processGet(Request *req, int conny, int signal) {
 
     struct stat finfo;
     fstat(fd, &finfo);
-    off_t fileSize = finfo.st_size;
+    //off_t fileSize = finfo.st_size;
 
     //printf("\n%s%zu\n", "davis", (size_t)fileSize);
 
-    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n", (size_t) fileSize);
+    //sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n", (size_t) fileSize);
+    if(req->found == false){
+        sprintf(response, "GET,/%s,200,%d\n", req->uri, 0);
+        fprintf(stderr, "GET,/%s,200,%d\n", req->uri, 0);
+    }
+    else{
+        sprintf(response, "GET,%s,200,%d\n", req->uri, req->id);
+        fprintf(stderr, "GET,%s,200,%d\n", req->uri, req->id);
+    }
     getOutput(conny, response, strlen(response));
 
     size_t bytez = 0;
@@ -207,6 +235,7 @@ void processReq(Request *req, char *bufa, int con) {
 
     bufa += p[0].rm_eo; //point after \r\n
     if (bufa[3] == '\0') {
+        req->found = false;
         if (strcmp(req->meth, "GET") == 0) { //GET /..txt HTTP/#.#\r\n\r\n\0
             processGet(req, con, 0);
             return;
@@ -214,8 +243,7 @@ void processReq(Request *req, char *bufa, int con) {
             processPUT(req, bufa, con, 1);
             return;
         } else {
-            sprintf(response,
-                "HTTP/1.1 501 Not Implemented\r\nContent-Length: 16\r\n\r\nNot Implemented\n");
+            //sprintf(response,"HTTP/1.1 501 Not Implemented\r\nContent-Length: 16\r\n\r\nNot Implemented\n");
             getOutput(con, response, strlen(response));
             return;
         }
@@ -231,12 +259,24 @@ void processReq(Request *req, char *bufa, int con) {
     }
 
     memcpy(req->hdr, &bufa[p2[0].rm_so], p2[0].rm_eo);
+    //printf("\nstart:%d\n", p2[0].rm_so);
+    //printf("\n%c\n",bufa[p2[0].rm_so+1]);
+    //printf("\nend:%d\n", p2[0].rm_eo);
     req->hdr[p2[0].rm_eo] = '\0';
     req->val = atol(&bufa[p2[3].rm_so]);
+    req->id = atol(&bufa[12]);
+    //printf("\nPROVIDER:%d\n", req->val);
+
+    //printf("\nhere-1:%d\n", p2[2].rm_so);
+    //printf("\nhere0:%d\n", p2[2].rm_eo);
+    //printf("\nhere1:%d\n", p2[3].rm_so);
+    //printf("\nhere2:%d\n", p2[3].rm_eo);
+    //printf("\nhere3:%d\n", p2[3].rm_so - p2[3].rm_eo);
 
     bufa += p2[0].rm_eo; //Now point before \r\n then msgBody
     //1. if bufa[3] == null then check if get or put to determine course of action
     if (bufa[3] == '\0') {
+        req->found = true;
         if (strcmp(req->meth, "GET") == 0) { //GET /...txt HTTP/#.#\r\nContent-Length: #\r\n\r\n\0
             processGet(req, con, 0);
             return;
@@ -248,6 +288,7 @@ void processReq(Request *req, char *bufa, int con) {
             return; //FIX THIS
         }
     } else {
+         req->found = true;
         if (strcmp(req->meth, "GET")
             == 0) { //GET /...txt HTTP/#.#\r\nContent-Length: #\r\n\r\nMESSAGE
             processGet(req, con, 1);
@@ -272,9 +313,9 @@ void handle_connection(int connfd) {
     while ((bytes = read_until(connfd, buffer, 1000000, "")) > 0) {
         processReq(&req, buffer, connfd);
     }
-    exit(1);
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
         char response[70];
+        //sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\n\r\nBad Request\n");
         sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\n\r\nBad Request\n");
         getOutput(connfd, response, strlen(response));
     }
@@ -285,7 +326,7 @@ void handle_connection(int connfd) {
 }
 
 static void usage(char *exec){
-    fprintf(stderr, "usage: %s [-t threads] [-l logfile] <port>\n", exec);
+    fprintf(stderr, "usage: %s [-t threads] <port>\n", exec);
 }
 
 static size_t strtouint16(char number[]) {
@@ -296,8 +337,6 @@ static size_t strtouint16(char number[]) {
     }
     return num;
 }
-
-
 
 void *worker_thread(void *arg){
         //char buffer[1000000] = { '\0' };
@@ -319,6 +358,7 @@ void *worker_thread(void *arg){
             exit(1);
             */
             handle_connection(conny);
+            close(conny);
         }
         return NULL;
 }
@@ -354,18 +394,26 @@ int main(int argc, char *argv[]) {
     }
     printf("\n%s%d\n", "port:", port);
 
+    signal(SIGPIPE, SIG_IGN);
+
     q = queue_new(threads); //to hold enough connfds
 
-    thread_pool = (reqThread **)malloc(sizeof(reqThread *)*threads); //depends on thread count 
+    pthread_mutex_init(&mutex, NULL);
 
+    thread_pool = (reqThread **)malloc(sizeof(reqThread *)*threads); //depends on thread count 
+/*
     for(int i = 0; i < threads; i++){
         thread_pool[i] = (reqThread *)malloc(sizeof(reqThread));
         thread_pool[i]->thread_id = i;
         thread_pool[i]->thread = (pthread_t *)malloc(sizeof(pthread_t));
         pthread_create(thread_pool[i]->thread, NULL, worker_thread, NULL);
     }
+*/
+    pthread_t thread_pool[threads];
+    for(int i = 0; i < threads; i++){
+        pthread_create(&(thread_pool[i]), NULL, worker_thread, NULL);
+    }
     
-
     Listener_Socket listenfd;
 
     if ((listener_init(&listenfd, port)) == -1)
@@ -384,7 +432,6 @@ int main(int argc, char *argv[]) {
         int64_t con = connfd;
 
         //uintptr_t num;
-
         //handle_connection(connfd);
         queue_push(q, (void *)(intptr_t)con); //should push this connfd 
         //queue_pop(q, (void**)&num); //then pop it to display it to make sure working 

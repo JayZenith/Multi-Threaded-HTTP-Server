@@ -60,13 +60,21 @@ void getOutput(int connn, char *b, size_t len) {
 
 void processPUT(Request *req, char *bufm, int conny, int signal) {
 
+    pthread_mutex_lock(&mutex);
+
     char response[150] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
-        //sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: %d\r\n\r\nBad Request\n",
-            //req->val);
-        sprintf(response, "PUT,/%s,400,%d\n", req->uri, req->id);
+        sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: %d\r\n\r\nBad Request\n", req->val);
+        
+        if(req->found == false){
+            fprintf(stderr, "GET,/%s,400,%d\n", req->uri, 0);
+        }
+        else{
+            fprintf(stderr, "PUT,/%s,400,%d\n", req->uri, req->id);
+        }
 
         getOutput(conny, response, strlen(response));
+        pthread_mutex_unlock(&mutex); //or else rest will be blocked
         return;
     }
 
@@ -76,12 +84,22 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
         if (fd == -1) {
             printf("creating error");
         }
-        //sprintf(response, "HTTP/1.1 201 Created\r\nContent-Length: 8\r\n\r\nCreated\n");
-        sprintf(response, "PUT,/%s,201,%d\n", req->uri, req->id);
+        sprintf(response, "HTTP/1.1 201 Created\r\nContent-Length: 8\r\n\r\nCreated\n");
+        if(req->found == false){
+            fprintf(stderr, "GET,/%s,201,%d\n", req->uri, 0);
+        }
+        else{
+            fprintf(stderr, "PUT,/%s,201,%d\n", req->uri, req->id);
+        }
         getOutput(conny, response, strlen(response));
     } else { //YOURE NOT WRITING
-        //sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nOK\n");
-        sprintf(response, "PUT,/%s,200,%d\n", req->uri, req->id);
+        sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nOK\n");
+        if(req->found == false){
+            fprintf(stderr, "GET,/%s,200,%d\n", req->uri, 0);
+        }
+        else{
+            fprintf(stderr, "PUT,/%s,200,%d\n", req->uri, req->id);
+        }
         getOutput(conny, response, strlen(response));
     }
     //just need to figure out flags and make this PUT shit work
@@ -113,40 +131,45 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
         }
     }
 
+    pthread_mutex_unlock(&mutex);
+
     close(fd);
 }
 
 void processGet(Request *req, int conny, int signal) {
     char response[100] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
-        /*
         sprintf(response, "HTTP/1.1 505 Version Not Supported\r\nContent-Length: 22\r\n\r\nVersion "
                           "Not Supported\n");
-        */
         if(req->found == false){
-            sprintf(response, "GET,%s,505,%d\n", req->uri, 0);
+            fprintf(stderr, "GET,/%s,505,%d\n", req->uri, 0);
         }
         else{
-            sprintf(response, "GET,%s,505,%d\n", req->uri, req->id);
+            fprintf(stderr, "GET,/%s,505,%d\n", req->uri, req->id);
         }
         getOutput(conny, response, strlen(response));
         return;
     }
 
     if (access(req->uri, X_OK) == 0) {
-        //sprintf(response, "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\n\r\nForbidden\n");
-        sprintf(response, "GET,%s,403, %d", req->uri, req->id);
+        sprintf(response, "HTTP/1.1 403 Forbidden\r\nContent-Length: 10\r\n\r\nForbidden\n");
+        if(req->found == false){
+            fprintf(stderr, "GET,/%s,403,%d\n", req->uri, 0);
+        }
+        else{
+            fprintf(stderr, "GET,/%s,403,%d\n", req->uri, req->id);
+        }
         getOutput(conny, response, strlen(response));
         return;
     }
 
     int fd = open(req->uri, O_RDONLY, 0666);
     if (fd == -1) {
-        //sprintf(response, "HTTP/1.1 404 Not Found\r\nContent-Length: 10\r\n\r\nNot Found\n");
+        sprintf(response, "HTTP/1.1 404 Not Found\r\nContent-Length: 10\r\n\r\nNot Found\n");
         if(req->found == false)
-            sprintf(response, "GET,%s,404,%d\n", req->uri, 0);
+            fprintf(stderr, "GET,/%s,404,%d\n", req->uri, 0);
         else
-            sprintf(response, "GET,%s,404,%d\n", req->uri, req->id);
+            fprintf(stderr, "GET,/%s,404,%d\n", req->uri, req->id);
         getOutput(conny, response, strlen(response));
         close(fd);
         return;
@@ -158,18 +181,16 @@ void processGet(Request *req, int conny, int signal) {
 
     struct stat finfo;
     fstat(fd, &finfo);
-    //off_t fileSize = finfo.st_size;
+    off_t fileSize = finfo.st_size;
 
     //printf("\n%s%zu\n", "davis", (size_t)fileSize);
 
-    //sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n", (size_t) fileSize);
+    sprintf(response, "HTTP/1.1 200 OK\r\nContent-Length: %zu\r\n\r\n", (size_t) fileSize);
     if(req->found == false){
-        sprintf(response, "GET,/%s,200,%d\n", req->uri, 0);
         fprintf(stderr, "GET,/%s,200,%d\n", req->uri, 0);
     }
     else{
-        sprintf(response, "GET,%s,200,%d\n", req->uri, req->id);
-        fprintf(stderr, "GET,%s,200,%d\n", req->uri, req->id);
+        fprintf(stderr, "GET,/%s,200,%d\n", req->uri, req->id);
     }
     getOutput(conny, response, strlen(response));
 
@@ -347,7 +368,7 @@ void *worker_thread(void *arg){
         for(;;){
             queue_pop(q, (void**)&connfd3); //then pop it to display it to make sure working 
             conny = (int)connfd3;
-            printf("\n\n%s%d\n\n", "is it:", conny); //negative?
+            //printf("\n\n%s%d\n\n", "is it:", conny); //negative?
             /*
             while ((bytes = read_until(conny, buffer, 1000000, "")) > 0) {
                 //processReq(&req, buffer, connfd);
@@ -372,7 +393,7 @@ int main(int argc, char *argv[]) {
     while((opt = getopt(argc, argv, OPTIONS)) != -1){
         switch(opt){
             case 't':
-                printf("\n%s%s\n", "optarg:", optarg);
+                //printf("\n%s%s\n", "optarg:", optarg);
                 threads = strtol(optarg, NULL, 10);
                 //if(threads <= 0){
                     //errx(EXIT_FAILURE, "wrong number of threads");
@@ -392,7 +413,7 @@ int main(int argc, char *argv[]) {
     if(port == 0){
         errx(EXIT_FAILURE, "bad port number: %s", argv[1]);
     }
-    printf("\n%s%d\n", "port:", port);
+    //printf("\n%s%d\n", "port:", port);
 
     signal(SIGPIPE, SIG_IGN);
 

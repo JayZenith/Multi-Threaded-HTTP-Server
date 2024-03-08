@@ -101,8 +101,8 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
     //just need to figure out flags and make this PUT shit work
 
     //WRITE WHAT WAS IN THE BUFFER INITIALLY
-    fprintf(stderr, "%c", bufm[0]);
-    fprintf(stderr, "%d", req->val);
+    //fprintf(stderr, "%c", bufm[0]);
+    //fprintf(stderr, "%d", req->val);
     size_t num_written = 0;
     write_n_bytes(fd, bufm + num_written, (size_t) req->val);
 
@@ -140,7 +140,7 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
 }
 
 void processGet(Request *req, int conny, int signal) {
-    sem_wait(&workers);
+    pthread_mutex_lock(&mutex);
     char response[100] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
         sprintf(response, "HTTP/1.1 505 Version Not Supported\r\nContent-Length: 22\r\n\r\nVersion "
@@ -153,7 +153,7 @@ void processGet(Request *req, int conny, int signal) {
         }
         getOutput(conny, response, strlen(response));
 
-        sem_post(&workers);
+        pthread_mutex_unlock(&mutex);
         return;
     }
 
@@ -166,7 +166,7 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,403,%d\n", req->uri, req->id);
         }
         getOutput(conny, response, strlen(response));
-        sem_post(&workers);
+        pthread_mutex_unlock(&mutex);
         return;
     }
 
@@ -179,7 +179,7 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,404,%d\n", req->uri, req->id);
         getOutput(conny, response, strlen(response));
         close(fd);
-        sem_post(&workers);
+        pthread_mutex_unlock(&mutex);
         return;
     }
 
@@ -227,7 +227,7 @@ void processGet(Request *req, int conny, int signal) {
     //getOutput(conny, buf + 0, num_read);
 
     close(fd);
-    sem_post(&workers);
+    pthread_mutex_unlock(&mutex);
     return;
 }
 

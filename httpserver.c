@@ -23,13 +23,7 @@
 #include <semaphore.h>
 #include "queue.h"
 
-typedef struct{
-    int thread_id;
-    pthread_t *thread;
-} reqThread;
-
 #define BUF_SIZE 1000000
-static reqThread **thread_pool;
 #define DEFAULT_THREAD_COUNT 4;
 #define OPTIONS "t:"
 static FILE *logfile;
@@ -62,8 +56,7 @@ void getOutput(int connn, char *b, size_t len) {
 }
 
 void processPUT(Request *req, char *bufm, int conny, int signal) {
-
-    pthread_mutex_lock(&wrt);
+    pthread_mutex_lock(&mutex);
 
     char response[150] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
@@ -77,7 +70,7 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
         }
 
         getOutput(conny, response, strlen(response));
-        pthread_mutex_unlock(&wrt); //or else rest will be blocked
+        pthread_mutex_unlock(&mutex);
         return;
     }
 
@@ -108,10 +101,14 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
     //just need to figure out flags and make this PUT shit work
 
     //WRITE WHAT WAS IN THE BUFFER INITIALLY
+    fprintf(stderr, "%c", bufm[0]);
+    fprintf(stderr, "%d", req->val);
     size_t num_written = 0;
     write_n_bytes(fd, bufm + num_written, (size_t) req->val);
 
     //NOW CONTINUE READING AND WRITING VIA SOCKET
+    
+    /*
     size_t bytez = 0;
     size_t num_read = 0;
     size_t free_space = sizeof(bufm);
@@ -120,31 +117,30 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
         bytez = read(conny, bufm + num_read, free_space);
         if (bytez < 0)
             printf("bytez error");
-        if (bytez == 0)
+        if (bytez == 0){
             break;
+        }
         num_read += bytez;
         free_space -= bytez;
+            
         if (free_space == 0) {
-            //getOutput(conny, bufm + 0, num_read);
+                //getOutput(conny, bufm + 0, num_read);
             write_n_bytes(fd, bufm + 0, (size_t) req->val);
             free_space = sizeof(bufm);
             num_read = 0;
         } else {
             getOutput(fd, bufm + 0, num_read);
         }
+            
     }
-
-    pthread_mutex_unlock(&wrt);
-
+    */
+    pthread_mutex_unlock(&mutex);
     close(fd);
+    return;
 }
 
 void processGet(Request *req, int conny, int signal) {
-    pthread_mutex_lock(&mutex);
-    readCount++;
-    if(readCount == 1){
-        pthread_mutex_lock(&wrt);
-    }
+    sem_wait(&workers);
     char response[100] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
         sprintf(response, "HTTP/1.1 505 Version Not Supported\r\nContent-Length: 22\r\n\r\nVersion "
@@ -157,10 +153,7 @@ void processGet(Request *req, int conny, int signal) {
         }
         getOutput(conny, response, strlen(response));
 
-        readCount--; //first since non-atomic
-        if(readCount == 0)
-            pthread_mutex_unlock(&wrt);
-        pthread_mutex_unlock(&mutex);
+        sem_post(&workers);
         return;
     }
 
@@ -173,10 +166,7 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,403,%d\n", req->uri, req->id);
         }
         getOutput(conny, response, strlen(response));
-        readCount--; //first since non-atomic
-        if(readCount == 0)
-            pthread_mutex_unlock(&wrt);
-        pthread_mutex_unlock(&mutex);
+        sem_post(&workers);
         return;
     }
 
@@ -189,11 +179,7 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,404,%d\n", req->uri, req->id);
         getOutput(conny, response, strlen(response));
         close(fd);
-
-        readCount--; //first since non-atomic
-        if(readCount == 0)
-            pthread_mutex_unlock(&wrt);
-        pthread_mutex_unlock(&mutex);
+        sem_post(&workers);
         return;
     }
 
@@ -240,11 +226,8 @@ void processGet(Request *req, int conny, int signal) {
     //getOutput(conny, response, strlen(response));
     //getOutput(conny, buf + 0, num_read);
 
-    readCount--; //first since non-atomic
-    if(readCount == 0)
-        pthread_mutex_unlock(&wrt);
-    pthread_mutex_unlock(&mutex);
     close(fd);
+    sem_post(&workers);
     return;
 }
 
@@ -357,7 +340,7 @@ void handle_connection(int connfd) {
     ssize_t bytes = 0;
     Request req = { 0 };
 
-    while ((bytes = read_until(connfd, buffer, 1000000, "")) > 0) {
+    while ((bytes = read_until(connfd, buffer, 1000000, NULL)) > 0) {
         processReq(&req, buffer, connfd);
     }
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -385,29 +368,20 @@ static size_t strtouint16(char number[]) {
     return num;
 }
 
-void *worker_thread(void *arg){
-        //char buffer[1000000] = { '\0' };
-        //ssize_t bytes = 0;
-        (void) arg;
-        uintptr_t connfd3;
-        int conny;
+void *worker_thread(){
+        //uintptr_t connfd3;
+        //int conny;
         //sem_wait(&workers); and post whenever a worker is done
         //I believe the for loop wont be needed 
         for(;;){
-            queue_pop(q, (void**)&connfd3); //then pop it to display it to make sure working 
-            conny = (int)connfd3;
-            //printf("\n\n%s%d\n\n", "is it:", conny); //negative?
-            /*
-            while ((bytes = read_until(conny, buffer, 1000000, "")) > 0) {
-                //processReq(&req, buffer, connfd);
-            }
-            for(int i = 0; i < 18; i++)
-                printf("%c", buffer[i]);
-            printf("end");
-            exit(1);
-            */
-            handle_connection(conny);
-            close(conny);
+            uintptr_t connfd3 = -1;
+            //queue_pop(q, (void**)&connfd3); //then pop it to display it to make sure working 
+            queue_pop(q, (void**)&connfd3);
+            //conny = (int)connfd3;
+            //handle_connection(conny);
+            handle_connection(connfd3);
+            //close(conny);
+            close(connfd3);
         }
         return NULL;
 }
@@ -423,9 +397,6 @@ int main(int argc, char *argv[]) {
             case 't':
                 //printf("\n%s%s\n", "optarg:", optarg);
                 threads = strtol(optarg, NULL, 10);
-                //if(threads <= 0){
-                    //errx(EXIT_FAILURE, "wrong number of threads");
-                //}
                 break; 
             return EXIT_FAILURE;
         }
@@ -451,16 +422,6 @@ int main(int argc, char *argv[]) {
     pthread_mutex_init(&wrt, NULL);
     sem_init(&workers, 0, 0);
 
-
-    thread_pool = (reqThread **)malloc(sizeof(reqThread *)*threads); //depends on thread count 
-/*
-    for(int i = 0; i < threads; i++){
-        thread_pool[i] = (reqThread *)malloc(sizeof(reqThread));
-        thread_pool[i]->thread_id = i;
-        thread_pool[i]->thread = (pthread_t *)malloc(sizeof(pthread_t));
-        pthread_create(thread_pool[i]->thread, NULL, worker_thread, NULL);
-    }
-*/
     pthread_t thread_pool[threads];
     for(int i = 0; i < threads; i++){
         pthread_create(&(thread_pool[i]), NULL, worker_thread, NULL);
@@ -482,9 +443,6 @@ int main(int argc, char *argv[]) {
         }
         //connfd = 444;
         int64_t con = connfd;
-
-        //uintptr_t num;
-        //handle_connection(connfd);
         queue_push(q, (void *)(intptr_t)con); //should push this connfd 
         //queue_pop(q, (void**)&num); //then pop it to display it to make sure working 
         //printf("\n\n%s%lu\n\n", "is it:", num);

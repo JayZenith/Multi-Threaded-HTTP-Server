@@ -316,13 +316,13 @@ void processReq(Request *req, char *bufa, int con) {
         int d = p[2].rm_eo - p[2].rm_so;
         memcpy(req->uri, &bufa[p[2].rm_so], d);
         req->uri[d] = '\0';
-        /*
-        pthread_mutex_lock(&mutex3);
+
+        //pthread_mutex_lock(&mutex3);
         fileLog[logId] = req->uri;
         req->threadId = logId;
         logId++;
-        pthread_mutex_unlock(&mutex3);
-        */
+        //pthread_mutex_unlock(&mutex3);
+        
         //VERSION
         int k = p[3].rm_eo - p[3].rm_so;
         memcpy(req->vers, &bufa[p[3].rm_so], k);
@@ -510,7 +510,7 @@ int main(int argc, char *argv[]) {
     //number of clients?
     fileLog = malloc(100 * sizeof(char *));
     logId = 0;
-    for(int i = 0; i < 100; i++){
+    for(int i = 0; i < threads; i++){
         fileLog[i] = (char *)malloc(64+1); //stringsize+1
     }
 

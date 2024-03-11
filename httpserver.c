@@ -23,7 +23,7 @@
 #include <semaphore.h>
 #include "queue.h"
 
-#define BUF_SIZE 1000000
+#define BUF_SIZE 500000
 #define DEFAULT_THREAD_COUNT 4;
 #define OPTIONS "t:"
 queue_t *q;
@@ -410,12 +410,12 @@ void processReq(Request *req, char *bufa, int con) {
 }
 
 void handle_connection(int connfd) {
-    char buffer[1000000] = { '\0' };
+    char buffer[BUF_SIZE] = { '\0' };
     //memset(buffer, 0, 1000);
     ssize_t bytes = 0;
     Request req = { 0 };
     
-    while ((bytes = read_until(connfd, buffer, 1000000, NULL)) > 0) {
+    while ((bytes = read_until(connfd, buffer, BUF_SIZE, NULL)) > 0) {
         processReq(&req, buffer, connfd);
     }
     
@@ -438,15 +438,6 @@ void handle_connection(int connfd) {
 
 static void usage(char *exec){
     fprintf(stderr, "usage: %s [-t threads] <port>\n", exec);
-}
-
-static size_t strtouint16(char number[]) {
-    char *last;
-    long num = strtol(number, &last, 10);
-    if (num <= 0 || num > UINT16_MAX || *last != '\0') {
-        return 0;
-    }
-    return num;
 }
 
 void *worker_thread(){
@@ -489,7 +480,7 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    int port = strtouint16(argv[optind]);
+    int64_t port = atol(argv[optind]);
     if(port == 0){
         errx(EXIT_FAILURE, "bad port number: %s", argv[1]);
     }

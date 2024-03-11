@@ -26,12 +26,16 @@
 #define BUF_SIZE 1000000
 #define DEFAULT_THREAD_COUNT 4;
 #define OPTIONS "t:"
-static FILE *logfile;
 queue_t *q;
 pthread_mutex_t mutex;
+pthread_mutex_t mutex2;
+pthread_mutex_t mutex3;
 pthread_mutex_t wrt;
 sem_t workers;
 int readCount;
+char** fileLog;
+int logId;
+int threadCount;
 
 void fatal_error(const char *msg) {
     fprintf(stderr, "%s\n", msg);
@@ -47,6 +51,8 @@ typedef struct Request {
     unsigned int val;
     unsigned int id;
     bool found;
+    int threadId;
+    bool logLock;
 } Request;
 
 void getOutput(int connn, char *b, size_t len) {
@@ -57,6 +63,8 @@ void getOutput(int connn, char *b, size_t len) {
 
 void processPUT(Request *req, char *bufm, int conny, int signal) {
     pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&wrt);
+    //pthread_mutex_lock(&mutex);
 
     char response[150] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
@@ -70,6 +78,7 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
         }
 
         getOutput(conny, response, strlen(response));
+        pthread_mutex_unlock(&wrt);
         pthread_mutex_unlock(&mutex);
         return;
     }
@@ -135,12 +144,36 @@ void processPUT(Request *req, char *bufm, int conny, int signal) {
     }
     */
     pthread_mutex_unlock(&mutex);
+    pthread_mutex_unlock(&wrt);
     close(fd);
     return;
 }
 
 void processGet(Request *req, int conny, int signal) {
-    pthread_mutex_lock(&mutex);
+    if(readCount >= 1){
+        for(int i = 0; i < logId; i++){
+            if((req->uri != fileLog[i]) && (req->threadId != i))
+                req->logLock = true;
+            else{
+                req->logLock = false;
+                break;
+            }
+        }
+    }
+    else 
+        req->logLock = false;
+
+    if(req->logLock == false)
+        pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex2);
+    readCount++;
+    if(readCount == 1){
+        pthread_mutex_lock(&wrt);
+    }
+    pthread_mutex_unlock(&mutex2);
+    //if getting diff files then allow 
+        //else only allow when leaving 
+    
     char response[100] = { 0 };
     if ((strcmp(req->vers, "HTTP/1.1") != 0) || signal == 1) {
         sprintf(response, "HTTP/1.1 505 Version Not Supported\r\nContent-Length: 22\r\n\r\nVersion "
@@ -152,7 +185,12 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,505,%d\n", req->uri, req->id);
         }
         getOutput(conny, response, strlen(response));
-
+        pthread_mutex_lock(&mutex2);
+        readCount--;
+        if(readCount == 0){
+            pthread_mutex_unlock(&wrt);
+        }
+        pthread_mutex_unlock(&mutex2);
         pthread_mutex_unlock(&mutex);
         return;
     }
@@ -166,6 +204,12 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,403,%d\n", req->uri, req->id);
         }
         getOutput(conny, response, strlen(response));
+        pthread_mutex_lock(&mutex2);
+        readCount--;
+        if(readCount == 0){
+            pthread_mutex_unlock(&wrt);
+        }
+        pthread_mutex_unlock(&mutex2);
         pthread_mutex_unlock(&mutex);
         return;
     }
@@ -179,6 +223,12 @@ void processGet(Request *req, int conny, int signal) {
             fprintf(stderr, "GET,/%s,404,%d\n", req->uri, req->id);
         getOutput(conny, response, strlen(response));
         close(fd);
+        pthread_mutex_lock(&mutex2);
+        readCount--;
+        if(readCount == 0){
+            pthread_mutex_unlock(&wrt);
+        }
+        pthread_mutex_unlock(&mutex2);
         pthread_mutex_unlock(&mutex);
         return;
     }
@@ -227,6 +277,12 @@ void processGet(Request *req, int conny, int signal) {
     //getOutput(conny, buf + 0, num_read);
 
     close(fd);
+    pthread_mutex_lock(&mutex2);
+    readCount--;
+    if(readCount == 0){
+        pthread_mutex_unlock(&wrt);
+    }
+    pthread_mutex_unlock(&mutex2);
     pthread_mutex_unlock(&mutex);
     return;
 }
@@ -236,18 +292,21 @@ void processGet(Request *req, int conny, int signal) {
 #define HEAD2   "^(([A-Za-z0-9_.-]{1,28}:) ([ -~]{1,128})\r\n)*\0$"
 
 void processReq(Request *req, char *bufa, int con) {
+    pthread_mutex_lock(&mutex3);
     regex_t preg = { 0 };
     regmatch_t p[4] = { 0 };
     char response[100];
     if ((regcomp(&preg, REQLINE, REG_EXTENDED)) != 0) {
         sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\n\r\nBad Request\n");
         getOutput(con, response, strlen(response));
+        pthread_mutex_unlock(&mutex3);
         return;
     }
 
     if ((regexec(&preg, bufa, (size_t) 4, p, 0)) != 0) {
         sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\n\r\nBad Request\n");
         getOutput(con, response, strlen(response));
+        pthread_mutex_unlock(&mutex3);
         return;
     } else { //METHOD URI VERSION
         //METHOD
@@ -257,6 +316,13 @@ void processReq(Request *req, char *bufa, int con) {
         int d = p[2].rm_eo - p[2].rm_so;
         memcpy(req->uri, &bufa[p[2].rm_so], d);
         req->uri[d] = '\0';
+        /*
+        pthread_mutex_lock(&mutex3);
+        fileLog[logId] = req->uri;
+        req->threadId = logId;
+        logId++;
+        pthread_mutex_unlock(&mutex3);
+        */
         //VERSION
         int k = p[3].rm_eo - p[3].rm_so;
         memcpy(req->vers, &bufa[p[3].rm_so], k);
@@ -268,13 +334,16 @@ void processReq(Request *req, char *bufa, int con) {
         req->found = false;
         if (strcmp(req->meth, "GET") == 0) { //GET /..txt HTTP/#.#\r\n\r\n\0
             processGet(req, con, 0);
+            pthread_mutex_unlock(&mutex3);
             return;
         } else if (strcmp(req->meth, "PUT") == 0) { //PUT /..txt HTTP/#.#\r\n\r\n\0
             processPUT(req, bufa, con, 1);
+            pthread_mutex_unlock(&mutex3);
             return;
         } else {
             //sprintf(response,"HTTP/1.1 501 Not Implemented\r\nContent-Length: 16\r\n\r\nNot Implemented\n");
             getOutput(con, response, strlen(response));
+            pthread_mutex_unlock(&mutex3);
             return;
         }
     }
@@ -309,12 +378,15 @@ void processReq(Request *req, char *bufa, int con) {
         req->found = true;
         if (strcmp(req->meth, "GET") == 0) { //GET /...txt HTTP/#.#\r\nContent-Length: #\r\n\r\n\0
             processGet(req, con, 0);
+            pthread_mutex_unlock(&mutex3);
             return;
         } else if (strcmp(req->meth, "PUT")
                    == 0) { //PUT /...txt HTTP/#.#\r\nContent-Length: #\r\n\r\n\0
             processPUT(req, bufa, con, 1);
+            pthread_mutex_unlock(&mutex3);
             return;
         } else {
+            pthread_mutex_unlock(&mutex3);
             return; //FIX THIS
         }
     } else {
@@ -322,13 +394,16 @@ void processReq(Request *req, char *bufa, int con) {
         if (strcmp(req->meth, "GET")
             == 0) { //GET /...txt HTTP/#.#\r\nContent-Length: #\r\n\r\nMESSAGE
             processGet(req, con, 1);
+            pthread_mutex_unlock(&mutex3);
             return;
         } else if (strcmp(req->meth, "PUT")
                    == 0) { //PUT /...txt HTTP/#.#\r\nContent-Length: #\r\n\r\nMESSAGE
             bufa += 2;
             processPUT(req, bufa, con, 0);
+            pthread_mutex_unlock(&mutex3);
             return;
         } else {
+            pthread_mutex_unlock(&mutex3);
             return; //FIX THIS
         }
     }
@@ -339,10 +414,16 @@ void handle_connection(int connfd) {
     //memset(buffer, 0, 1000);
     ssize_t bytes = 0;
     Request req = { 0 };
-
+    
     while ((bytes = read_until(connfd, buffer, 1000000, NULL)) > 0) {
         processReq(&req, buffer, connfd);
     }
+    
+    /*
+    while ((bytes = read_n_bytes(connfd, buffer, 1000000)) > 0) {
+        processReq(&req, buffer, connfd);
+    }
+    */
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
         char response[70];
         //sprintf(response, "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\n\r\nBad Request\n");
@@ -390,7 +471,7 @@ void *worker_thread(){
 int main(int argc, char *argv[]) {
     int opt = 0;
     int threads = DEFAULT_THREAD_COUNT;
-    logfile = stderr;
+    
 
     while((opt = getopt(argc, argv, OPTIONS)) != -1){
         switch(opt){
@@ -418,9 +499,20 @@ int main(int argc, char *argv[]) {
 
     q = queue_new(threads); //to hold enough connfds
 
+    threadCount = threads;
+
     pthread_mutex_init(&mutex, NULL);
+    pthread_mutex_init(&mutex2, NULL);
+    pthread_mutex_init(&mutex3, NULL);
     pthread_mutex_init(&wrt, NULL);
     sem_init(&workers, 0, 0);
+
+    //number of clients?
+    fileLog = malloc(100 * sizeof(char *));
+    logId = 0;
+    for(int i = 0; i < 100; i++){
+        fileLog[i] = (char *)malloc(64+1); //stringsize+1
+    }
 
     pthread_t thread_pool[threads];
     for(int i = 0; i < threads; i++){
@@ -448,6 +540,13 @@ int main(int argc, char *argv[]) {
         //printf("\n\n%s%lu\n\n", "is it:", num);
         //sem_post(&workers);
     }
+    free(fileLog);
+    free(q);
+    pthread_mutex_destroy(&mutex);
+    pthread_mutex_destroy(&mutex2);
+    pthread_mutex_destroy(&mutex3);
+    pthread_mutex_destroy(&wrt);
+    sem_destroy(&workers);
     return EXIT_SUCCESS;
     
 }
